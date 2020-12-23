@@ -1,3 +1,5 @@
+This is a simple phonebook app which was created to demonstrate skills in OO design as well as knowledge and use cases of various design patterns.
+
 **CLI Examples**
 
 ```./bin/phonebook_cli-q```                                                                          returns all records in database
