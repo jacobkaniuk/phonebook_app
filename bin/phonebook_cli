@@ -1,0 +1,261 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import argparse
+from collections import OrderedDict
+
+from lib.api.auth import WriteAuthRules, WriteAuthRuleHandler
+from lib.api.conf import AppConfig, setup_app_config
+from lib.api.record_handler import DatabaseRecordWriter, DatabaseRecordReader, DatabaseRecord
+from lib.utils import phone_number_to_integer_stream, integer_stream_to_phone_number
+
+
+def display_all_results():
+    sys.stdout.write("Database Results: \n")
+    for result in DatabaseRecordReader.get_all_records():
+        sys.stdout.write("{}\t{}\t{}\n".format(result[0], integer_stream_to_phone_number(result[1]), result[2]))
+
+
+def check_new_record_has_required_data(db_record):
+    if not all([db_record.name, db_record.phone, db_record.address]):
+        sys.stderr.write("\n\n{} Data Error {}\nPlease provide valid info for all fields:\n "
+                         "\nName: First, Middle, Last Name (separated by spaces)"
+                         "\nPhone: 10 digit phone number (with spaces or without)"
+                         "\nAddress: Address info (separated by spaces)\n\n".format("="*15, "="*15))
+        return False
+    if len(str(phone_number_to_integer_stream(db_record.phone))) != 10:
+        return False
+    return True
+
+
+def change_auth_rule(auth_rule):
+    """
+    Use this to change the write rules/criteria for new records to the db. See lib.api.auth -> WriteAuthRules.
+    :param auth_rule: specifying auth rule to change to
+    :type auth_rule: int
+    :return: None
+    """
+    if int(auth_rule) not in WriteAuthRules.ALL_RULES:
+        raise ValueError("Provided rule not in supported auth rules. Please provide valid parameter from supported "
+                         "list (use number): \n{}"
+                         .format([(WriteAuthRules.__dict__[rule], rule)
+                                  for rule in WriteAuthRules.__dict__ if 'WRITE' in rule]))
+    if not auth_rule == AppConfig.write_auth_rule:
+        AppConfig.change_write_auth_rule([WriteAuthRules.__dict__[rule] for rule in WriteAuthRules.__dict__
+                                          if WriteAuthRules.__dict__[rule] == int(auth_rule)][0])
+
+
+def export_data_to_file(path):
+    """
+    Export all the data in the database to a serial format. Default is the serial format currently used by
+    AppConfig. If a path is provided, the exported data will be export to the new path instead of the default
+    path set by the AppConfig.
+    :param path: full path of the result file we want our data to export to
+    :type path: str
+    :return: None
+    """
+    if path in ['default', 'Default', 'Defalt', 'DEFAULT']:
+        AppConfig.serial_format['writer'].write(DatabaseRecordReader.get_all_records(),
+                                                os.path.join(AppConfig.data_directory,
+                                                'records.{}'.format(AppConfig.serial_format['extension'])))
+        return True
+
+    if not os.path.exists(os.path.dirname(path)):
+        raise IOError("\n\nProvided parent directory to export data to does not exist. Please provide a valid path.\n")
+    if not os.path.splitext(os.path.basename(path))[-1] != ".{}".format(AppConfig.serial_format['extension']):
+        raise ValueError("\n\nProvided output extension does not match current serial format. Please change serial "
+                         "format using -s flag and provided serial format first, then reexport data.")
+    sys.stdout.write("Writing to: {}\n".format(path))
+    if os.path.dirname(path) != AppConfig.data_directory:
+        prev_dir = AppConfig.data_directory
+        AppConfig.change_data_directory(os.path.dirname(path))
+        AppConfig.serial_format['writer'].write(DatabaseRecordReader.get_all_records(),
+                                                path)
+        AppConfig.change_data_directory(prev_dir)
+
+
+def change_serial_format(serial_format):
+    """
+    Change the serial format we want to use for our serial exporting. Default is determined by AppConfig, which reads
+    settings in from config.ini file. See AppConfig for details.
+    :param serial_format: serial format we want to change to. Use -h to see list, or AppConfig.supported_serial_formats
+    :type serial_format: str
+    :return: None
+    """
+    if serial_format not in [_format['extension'] for _format in AppConfig.supported_serial_formats]:
+        raise ValueError("Invalid serial format passed. To change to another format, please provide a valid format"
+                         "extension. Supportd formats: {}"
+                         .format([_format['extension'] for _format in AppConfig.supported_serial_formats]))
+    if not serial_format == AppConfig.serial_format['extension']:
+        AppConfig.change_serial_format([_format for _format in AppConfig.supported_serial_formats if _format['extension'] == serial_format][0])
+
+
+def query_database(query_record):
+    """
+    Get results from the database based on the query record object we provide
+    :param query_record: record object we want to use as query data to get results
+    :type query_record: DatabaseRecord
+    :return: None
+    """
+    sys.stdout.write("Query => Name: {} Phone: {} Address: {}\n".format(query_record.name, query_record.phone, query_record.address))
+    sys.stdout.write("Database Results: \n")
+    for result in DatabaseRecordReader.get_records(query_record):
+        sys.stdout.write("{}\t{}\t{}\n".format(result[0], integer_stream_to_phone_number(result[1]), result[2]))
+
+
+def add_entry_to_database(db_record):
+    """
+    Add a new record to the database. Whether or not it gets added also depends on the current write authority rule,
+    as well as if all the required data was passed in (name, phone, address).
+    :param db_record: record that we want to add
+    :type db_record: DatabaseRecord
+    :return: None
+    """
+    if check_new_record_has_required_data(db_record):
+        cursor = DatabaseRecordWriter.database_driver.cursor()
+        if WriteAuthRuleHandler.can_add_with_auth_rule(DatabaseRecordWriter.records_table, cursor,
+                                                       AppConfig.write_auth_rule, db_record):
+            DatabaseRecordWriter.add_record(db_record)
+            cursor.close()
+            sys.stdout.write("Added new entry to database: {}\n".format(db_record))
+            display_all_results()
+            return True
+        else:
+            sys.stdout.write("Cannot add new record in database. According to current write authority rule, addition "
+                             "is not allowed. Please update your record info, or change the authority rule.\n")
+            return False
+    return False
+
+
+def delete_record(db_record):
+    """
+    Delete all records from the database which match our query record we provide.
+    :param db_record: record object we will use as query data
+    :type db_record: DatabaseRecord
+    :return: None
+    """
+    DatabaseRecordWriter.delete_record(db_record)
+    sys.stdout.write("Deleted records from database matching filters: {}\n".format(db_record))
+    display_all_results()
+    return True
+
+
+def update_entry(query_record, updated_record):
+    """
+    Update records in the database based on the query record we provide, and set their fields
+    equal to the data in the updated record we provide.
+    :param query_record: record used to query for results
+    :type query_record: DatabaseRecord
+    :param updated_record: record used to set fields on query results
+    :type updated_record: DatabaseRecord
+    :return: bool
+    """
+    # if we don't provide all 3 fields in the updated record, change individual fields
+    if not all([updated_record.name, updated_record.phone, updated_record.address]):
+        update_funcptrs = {
+            updated_record.name:    DatabaseRecordWriter.update_record_names,
+            updated_record.phone:   DatabaseRecordWriter.update_record_phones,
+            updated_record.address: DatabaseRecordWriter.update_record_address,
+        }
+        cursor = DatabaseRecordWriter.database_driver.cursor()
+        if WriteAuthRuleHandler.can_add_with_auth_rule(DatabaseRecordWriter.records_table, cursor,
+                                                       AppConfig.write_auth_rule, updated_record):
+            for field, funcptr in update_funcptrs.items():
+                if field:
+                    funcptr(query_record, updated_record)
+            display_all_results()
+            return True
+
+    # if we provide all 3 fields in updated record, use all fields method instead
+    if check_new_record_has_required_data(updated_record):
+        cursor = DatabaseRecordWriter.database_driver.cursor()
+        if WriteAuthRuleHandler.can_add_with_auth_rule(DatabaseRecordWriter.records_table, cursor,
+                                                       AppConfig.write_auth_rule, updated_record):
+            DatabaseRecordWriter.update_records_by_all_fields(query_record, updated_record)
+            cursor.close()
+            sys.stdout.write("Updated entry in data base: \n{} => {}\n\n".format(query_record, updated_record))
+            display_all_results()
+            return True
+        return False
+    return False
+
+
+if __name__ == '__main__':
+    setup_app_config()
+    DatabaseRecordWriter.create_records_database()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-a", "--add", action="store_true", help="Add a new record to the database.")
+    parser.add_argument("-au", "--auth", help="Change the authority policy for new records. "
+                                              "Supported rules (use number): {}"
+                        .format([(WriteAuthRules.__dict__[rule], rule) for rule in WriteAuthRules.__dict__ if 'WRITE' in rule]))
+    parser.add_argument('-d', '--delete', action="store_true", help="Delete record based on provided fields.")
+    parser.add_argument("-dis", "--display_all", action="store_true", help="Display all the results in the database.")
+    parser.add_argument("-q", "--query", action="store_true", help="Display results in database based on query. Providing no args returns all reults in database.")
+    parser.add_argument("-u", "--update", action="store_true", help="Update records in the database based on query and updated data.")
+    parser.add_argument("-e", "--export", help="Export all database data to serial format.")
+    parser.add_argument("-s", "--serial_format", help="Change the serial export format. Current supported formats: {}"
+                        .format([item['extension'] for item in AppConfig.supported_serial_formats]))
+    parser.add_argument("-n", "--name", help="Name field for the new/query record.", nargs='+')
+    parser.add_argument("-p", "--phone", help="Phone field for the new/query record.", nargs='+')
+    parser.add_argument("-adr", "--address", help="Address field for the new/query record.", nargs='+')
+    parser.add_argument("-un", "--uname", help="Name field for the updated record.", nargs='+')
+    parser.add_argument("-up", "--uphone", help="Phone field for the updated record.", nargs='+')
+    parser.add_argument("-uadr", "--uaddress", help="Address field for the updated record.", nargs='+')
+    args = parser.parse_args()
+
+    # convert to our args to a list for next step before we store them
+    for arg in [args.name, args.phone, args.address, args.uname, args.uphone, args.uaddress]:
+        if arg is not None:
+            if isinstance(arg, list):
+                pass
+            else:
+                arg = list(arg)
+    
+    # convert our query args into their correct format
+    args.name = " ".join(args.name) if args.name else None
+    if isinstance(args.phone, list):
+        args.phone = phone_number_to_integer_stream("".join(args.phone))
+    elif isinstance(args.phone, str):
+        args.phone = phone_number_to_integer_stream(args.phone)
+    args.address = " ".join(args.address) if args.address else None
+
+    # convert our updated args into their correct format for storage
+    args.uname = " ".join(args.uname) if args.uname else None
+    if isinstance(args.uphone, list):
+        args.uphone = phone_number_to_integer_stream("".join(args.uphone))
+    elif isinstance(args.uphone, str):
+        args.uphone = phone_number_to_integer_stream(args.uphone)
+    args.uaddress = " ".join(args.uaddress) if args.uaddress else None
+
+    # create our records
+    record = DatabaseRecord(args.name, args.phone, args.address)
+    updated_record = DatabaseRecord(args.uname, args.uphone, args.uaddress)
+
+    # function pointer dict mapping each arg to a function above
+    parser_funcptrs = OrderedDict({
+        args.display_all:   {"funcptr": display_all_results,    "args": 0},
+        args.auth:          {"funcptr": change_auth_rule,       "args": 1},
+        args.add:           {"funcptr": add_entry_to_database,  "args": 1},
+        args.delete:        {"funcptr": delete_record,          "args": 1},
+        args.query:         {"funcptr": query_database,         "args": 1},
+        args.update:        {"funcptr": update_entry,           "args": 2},
+        args.serial_format: {"funcptr": change_serial_format,   "args": 1},
+        args.export:        {"funcptr": export_data_to_file,    "args": 1},
+    })
+    
+    # run through our args, and if user provided a valid value, run the
+    # function associated with that arg with their correct func params
+    for key, value in parser_funcptrs.items():
+        if key:
+            if value['args'] == 0:
+                value['funcptr']()
+            elif value['args'] == 1:
+                function = lambda func, parm: func(parm)
+                if isinstance(key, bool):
+                    function(value['funcptr'], record)
+                elif isinstance(key, str):
+                    function(value['funcptr'], key)
+            elif value['args'] == 2:
+                function = lambda func, parm1, parm2: func(parm1, parm2)
+                function(value['funcptr'], record, updated_record)
