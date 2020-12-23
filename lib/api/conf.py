@@ -123,14 +123,14 @@ class AppConfig(object):
 
     @classmethod
     def show_config_info(cls):
-        print "=== APP CONFIG === \n"
+        sys.stdout.write("=== APP CONFIG === \n\n")
         for attr in dir(cls):
             if not attr.startswith('__') and not attr.endswith('__') and not callable(getattr(cls, attr)):
-                print "{}{}".format(attr.upper().ljust(25), getattr(cls, attr))
+                sys.stdout.write("{}{}\n".format(attr.upper().ljust(25), getattr(cls, attr)))
 
     @classmethod
     def _confirm_and_display(cls):
-        print "\n*** Config settings successfully changed. ***\n"
+        sys.stdout.write("\n*** Config settings successfully changed. ***\n\n")
         cls.show_config_info()
 
 

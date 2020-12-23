@@ -1,4 +1,5 @@
 import os
+import sys
 import sqlite3
 import unittest
 
@@ -18,6 +19,6 @@ class TestSerialize(unittest.TestCase):
         for _format in AppConfig.supported_serial_formats:
             AppConfig.change_serial_format(_format)
             output_path = os.path.join(AppConfig.data_directory, "records.{}".format(AppConfig.serial_format['extension']))
-            print output_path
+            sys.stdout.write(output_path)
             AppConfig.serial_format['writer'].write(DatabaseRecordReader.get_all_records(), output_path)
             self.assertTrue(os.path.exists(output_path))
